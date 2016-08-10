@@ -10,6 +10,20 @@ global _leaf_method_var1 ; Global bank
 global _leaf_method_var2 ; Global bank
 
 
+#define CONFIG_BASIS CONFIG_EN_CRC \
+                   | CONFIG_CRCO
+
+#define CONFIG_OFF   CONFIG_BASIS
+
+#define CONFIG_TX    CONFIG_BASIS \
+                   | CONFIG_PWR_UP
+
+#define CONFIG_RX    CONFIG_BASIS \
+                   | CONFIG_PWR_UP \
+                   | CONFIG_PRIM_RX
+
+
+
 psect   barfunc,local,class=CODE,delta=2 ; PIC10/12/16
 // psect   barfunc,local,class=CODE,reloc=2 ; PIC18
 
@@ -53,24 +67,17 @@ spi_slave_init MACRO
 ENDM
 
 
+/**
+ * Wait for SPI to complete sending.
+ * Pre-requirenments:
+ * - 
+ */
 spi_wait MACRO
   LOCAL WAIT1
 WAIT1:
   BTFSS  BANKMASK(SSP1STAT), SSP1STAT_BF_POSITION
   GOTO   WAIT1
 ENDM
-     
-    
-global _nrf24_com_init
-_nrf24_com_init:
-
-    ce_init
-    spi_slave_init
-    
-    wreg_c     RF_CH, 103
-    
-    
-    return
 
     
     
@@ -117,17 +124,91 @@ rreg8:
 
   spi_wait
   return
-
+ 
 
 /**
- * Write own 4 byte address
- * W - register
+ * Swap n bytes over SPI from buffer.
+ * Leave FSR1 pointing to the first byte
+ * after the buffer: FSR1 += W.
+ *
+ * FSR1  - buffer to send
+ * W     - buffer size (W>0)
  */
+spi_swap:
+  BANKSEL(SSP1BUF)
+  MOVWF  _leaf_method_var1
+  
+  spi_slave_on
+  
+spi_swap_LOOP:
+  MOVIW  0[FSR1]
+  MOVWF  BANKMASK(SSP1BUF)
+
+  spi_wait
+
+  MOVF   BANKMASK(SSP1BUF), W
+  MOVWI  FSR1++
+  
+  DECFSZ _leaf_method_var1
+  GOTO spi_swap_LOOP
+  
+  spi_slave_off
+  return
+
+
+global _nrf24_com_init
+_nrf24_com_init:
+
+    ce_init
+    spi_slave_init
+    
+    MOVLW    LOW init_sequence_start
+    MOVWF    FSR1L
+
+    MOVLW    HIGH init_sequence_start
+    MOVWF    FSR1H
+
+_nrf24_com_init_LOOP:
+    MOVIW    FSR1++
+    BTFSC    STATUS, STATUS_Z_POSITION
+    RETURN
+    CALL     spi_swap
+
+    GOTO     _nrf24_com_init_LOOP
 
 
 
+init_sequence_start:
+  // 4 bytes addresses
+  DB 2
+  DB CMD_W_REGISTER | SETUP_AW
+  DB SETUP_AW_4BYTES
+  
+  // Set channel to 103
+  DB 2
+  DB CMD_W_REGISTER | RF_CH
+  DB 103
 
+  DB 2
+  DB CMD_W_REGISTER | RF_SETUP
+  DB 0 ; 0x23
+  
+  DB 5
+  DB CMD_W_REGISTER | RX_ADDR_P0
+  DB (HA_ADDRESS_MY >> 0) & 0xFF
+  DB (HA_ADDRESS_MY >> 8) & 0xFF
+  DB (HA_ADDRESS_MY >> 16) & 0xFF
+  DB (HA_ADDRESS_MY >> 24) & 0xFF
 
+  DB 5
+  DB CMD_W_REGISTER | TX_ADDR
+  DB (HA_ADDRESS_MASTER >> 0) & 0xFF
+  DB (HA_ADDRESS_MASTER >> 8) & 0xFF
+  DB (HA_ADDRESS_MASTER >> 16) & 0xFF
+  DB (HA_ADDRESS_MASTER >> 24) & 0xFF
+
+  ; End of init sequence
+  DB 0
 
 
 
