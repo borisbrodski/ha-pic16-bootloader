@@ -104,7 +104,21 @@ wreg8:
   spi_wait
 
   spi_slave_off
-  return
+  RETURN
+
+wreg8 MACRO(reg, val)
+  MOVLW  val
+  MOVWF  _leaf_method_var1
+  MOVLW  reg
+  CALL   wreg8
+ENDM
+
+wreg8_goto MACRO(reg, val)
+  MOVLW  val
+  MOVWF  _leaf_method_var1
+  MOVLW  reg
+  GOTO   wreg8
+ENDM
 
 
 /**
@@ -153,30 +167,50 @@ spi_swap_LOOP:
   GOTO spi_swap_LOOP
   
   spi_slave_off
-  return
+  RETURN
 
 
+/**
+ * Power off/rx/tx mode of the radio.
+ */
+power_off:
+  MOVLW  CONFIG_OFF
+  GOTO power_set
+power_rx:
+  MOVLW  CONFIG_RX
+  GOTO power_set
+power_tx:
+  MOVLW  CONFIG_TX
+power_set:
+  MOVWF  _leaf_method_var2
+  MOVLW  CONFIG_OFF
+  MOVWF  _leaf_method_var1
+  MOVF   _leaf_method_var2, W
+  GOTO   wreg8
+
+/**
+ * Global nRF24 com protocol
+ * initialization.
+ */
 global _nrf24_com_init
 _nrf24_com_init:
 
-    ce_init
-    spi_slave_init
+  ce_init
+  spi_slave_init
     
-    MOVLW    LOW init_sequence_start
-    MOVWF    FSR1L
+  MOVLW    LOW init_sequence_start
+  MOVWF    FSR1L
 
-    MOVLW    HIGH init_sequence_start
-    MOVWF    FSR1H
+  MOVLW    HIGH init_sequence_start
+  MOVWF    FSR1H
 
-_nrf24_com_init_LOOP:
-    MOVIW    FSR1++
-    BTFSC    STATUS, STATUS_Z_POSITION
-    RETURN
-    CALL     spi_swap
+nrf24_com_init_LOOP:
+  MOVIW    FSR1++
+  BTFSC    STATUS, STATUS_Z_POSITION
+  RETURN
+  CALL     spi_swap
 
-    GOTO     _nrf24_com_init_LOOP
-
-
+  GOTO     nrf24_com_init_LOOP
 
 init_sequence_start:
   // 4 bytes addresses
@@ -209,6 +243,62 @@ init_sequence_start:
 
   ; End of init sequence
   DB 0
+
+
+/**
+ * Configure for start com
+ */
+global _nrf24_com_init_start
+_nrf24_com_init_start:
+  ; Disable Auto ack
+  wreg8_goto(EN_AA, 0)
+
+
+/**
+ * Configure for quick com
+ */
+global _nrf24_com_init_quick
+_nrf24_com_init_quick:
+  ; Enable Auto ack
+  wreg8(EN_AA, 1)
+  wreg8_goto(SETUP_RETR, SETUP_RETR_ARC_15 | SETUP_RETR_ARD_1500)
+
+
+/**
+ * Send start com msg.
+ *
+ * FSR1   - 32 byte buffer to use
+ * Out: W - 0 : ok
+ *          1 : error
+ */
+global _nrf24_com_tx_start
+_nrf24_com_tx_start:
+  MOVLW  MSG_TYPE_START_COM
+  MOVWI  0[FSR1]
+
+  MOVLW  HA_ADDRESS_MY_LOCAL & 0xFF
+  MOVWI  1[FSR1]
+  MOVLW  HA_ADDRESS_MY_LOCAL >> 8
+  MOVWI  2[FSR1]
+
+  MOVLW  DEVICE_ID & 0xFF
+  MOVWI  3[FSR1]
+  MOVLW  (DEVICE_ID >> 8) & 0xFF
+  MOVWI  4[FSR1]
+  MOVLW  (DEVICE_ID >> 16) & 0xFF
+  MOVWI  5[FSR1]
+  MOVLW  DEVICE_ID >> 24
+  MOVWI  6[FSR1]
+
+  
+
+
+
+
+
+
+
+
 
 
 
