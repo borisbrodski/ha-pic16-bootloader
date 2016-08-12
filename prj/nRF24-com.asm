@@ -28,13 +28,18 @@ psect   barfunc,local,class=CODE,delta=2 ; PIC10/12/16
 // psect   barfunc,local,class=CODE,reloc=2 ; PIC18
 
 
-// Chip enable PIN
+/**
+ * Enable chip. No side effects.
+ */
 ce_on MACRO
     BANKSEL(CE_PORT)
     BSF     BANKMASK(CE_PORT), CE_PIN
 ENDM
 
 
+/**
+ * Disable chip. No side effects.
+ */
 ce_off MACRO
     BANKSEL(CE_PORT)
     BCF     BANKMASK(CE_PORT), CE_PIN
@@ -48,12 +53,19 @@ ENDM
 
 
 // Inverted SPI slave select PIN
+
+/**
+ * Activate SPI slave. No side effects.
+ */
 spi_slave_on MACRO
     BANKSEL(SPI_SLAVE_PORT)
     BCF     BANKMASK(SPI_SLAVE_PORT), SPI_SLAVE_PIN
 ENDM
 
 
+/**
+ * Turn off SPI slave. No side effects.
+ */
 spi_slave_off MACRO
     BANKSEL(SPI_SLAVE_PORT)
     BSF     BANKMASK(SPI_SLAVE_PORT), SPI_SLAVE_PIN
@@ -68,9 +80,8 @@ ENDM
 
 
 /**
- * Wait for SPI to complete sending.
- * Pre-requirenments:
- * - 
+ * Wait for SPI to complete swapping.
+ * No side effects.
  */
 spi_wait MACRO
   LOCAL WAIT1
@@ -145,14 +156,19 @@ rreg8:
  * Leave FSR1 pointing to the first byte
  * after the buffer: FSR1 += W.
  *
+ * spi_swap:         spi-on/swap/spi-off
+ * spi_swap_slave_on:swap/spi-off
+ *
  * FSR1  - buffer to send
  * W     - buffer size (W>0)
  */
 spi_swap:
+  spi_slave_on
+
+spi_swap_slave_on:
   BANKSEL(SSP1BUF)
   MOVWF  _leaf_method_var1
   
-  spi_slave_on
   
 spi_swap_LOOP:
   MOVIW  0[FSR1]
@@ -265,6 +281,47 @@ _nrf24_com_init_quick:
 
 
 /**
+ * Send message with enabled device.
+ *
+ * FSR1   - 32 byte buffer to send
+ * W      - size of the buffer
+ * Out: W - 0 : ok
+ *          1 : error
+ */
+msg_send:
+  spi_slave_on
+
+  MOVLW  CMD_W_TX_PAYLOAD
+  BANKSEL(SSP1BUF)
+  MOVWF  BANKMASK(SSP1BUF)
+
+  spi_wait
+
+  ; Swap buffer and turn slave off
+  CALL   spi_swap_slave_on
+
+msg_send_LOOP:
+  MOVLW  STATUS
+  CALL   rreg8
+  
+  BTFSS  BANKMASK(SSP1BUF), STATUS_MAX_RT_POSN
+  RETLW  1 ; Error
+
+  BTFSS  BANKMASK(SSP1BUF), STATUS_TX_DS_POSN
+  RETLW  0 ; Ok
+
+  GOTO   msg_send_LOOP
+
+
+
+
+
+
+
+
+
+
+/**
  * Send start com msg.
  *
  * FSR1   - 32 byte buffer to use
@@ -290,9 +347,20 @@ _nrf24_com_tx_start:
   MOVLW  DEVICE_ID >> 24
   MOVWI  6[FSR1]
 
-  
+  MOVLW  7
+  ce_on
+  CALL   send_msg
+  ce_off
+
+  RETURN
 
 
+
+
+
+  XORLW  0
+  BTFSS  STATUS, STATUS_Z_POSITION
+  RETURN
 
 
 

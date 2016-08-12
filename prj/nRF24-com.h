@@ -97,8 +97,9 @@ SPI_EXTERN uint8_t spi_buffer_size;
 #define FEATURE_EN_ACK_PAY  0b00000010
 #define FEATURE_EN_DYN_ACK  0b00000001
     
-
-
+#define STATUS_MAX_RT_POSN  4
+#define STATUS_TX_DS_POSN   5
+#define STATUS_RX_DR_POSN   6
 
 
 #ifdef	__cplusplus
