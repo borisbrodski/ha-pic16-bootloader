@@ -1,0 +1,24 @@
+COM Protocol
+============
+
+Base protocol
+-------------
+
+Start:
+- no automatic ack, short
+- send from device to node
+- continuously send through all channels
+- if reply received -> quick com mode
+
+Quick com:
+- with automatic ack, variable length
+- device send data msgs, node replys
+
+
+COM data messages
+-----------------
+
+1. Ask for firmware update
+2. Post measurement data
+3. Wait for commands
+

@@ -6,7 +6,7 @@ OPT EXPAND
 #include "nRF24-com.h"
 
 
-global _leaf_method_var1 ; Global bank
+global _lm_var1 ; Global bank
 global _leaf_method_var2 ; Global bank
 
 
@@ -90,14 +90,32 @@ WAIT1:
   GOTO   WAIT1
 ENDM
 
-    
-    
+
+
+
+/**
+ * Copy FSR2 into the FSR1.
+ * TODO: Check usage, remove if unneeded
+ */
+/*
+copy_FSR2_to_FSR1:
+  MOVF   FSR2L, W
+  MOVWF  FSR1L
+  MOVF   FSR2H, W
+  MOVWF  FSR1H
+  RETURN
+*/
+
+
+
 
 /**
  * Write 1 byte register.
  *
+ * Affected: BANK
+ *
  * W                  - RF24 register
- * _leaf_method_var1  - Value to write
+ * _lm_var1  - Value to write
  */
 wreg8:
   IORLW  CMD_W_REGISTER
@@ -109,7 +127,7 @@ wreg8:
 
   spi_wait
 
-  MOVF   BANKMASK(_leaf_method_var1), W
+  MOVF   BANKMASK(_lm_var1), W
   MOVWF  BANKMASK(SSP1BUF)
 
   spi_wait
@@ -119,21 +137,24 @@ wreg8:
 
 wreg8 MACRO(reg, val)
   MOVLW  val
-  MOVWF  _leaf_method_var1
+  MOVWF  _lm_var1
   MOVLW  reg
   CALL   wreg8
 ENDM
 
 wreg8_goto MACRO(reg, val)
   MOVLW  val
-  MOVWF  _leaf_method_var1
+  MOVWF  _lm_var1
   MOVLW  reg
   GOTO   wreg8
 ENDM
 
 
+
 /**
  * Read 1 byte register.
+ *
+ * Affected: BANK
  *
  * W            - RF24 register
  * Out: SSP1BUF - Value
@@ -151,24 +172,25 @@ rreg8:
   return
  
 
+
 /**
  * Swap n bytes over SPI from buffer.
  * Leave FSR1 pointing to the first byte
- * after the buffer: FSR1 += W.
+ * after the buffer: FSR1 += _lm_var1.
  *
  * spi_swap:         spi-on/swap/spi-off
  * spi_swap_slave_on:swap/spi-off
  *
- * FSR1  - buffer to send
- * W     - buffer size (W>0)
+ * Affected: _lm_var1, FSR1, BANK
+ *
+ * FSR1     - buffer to send
+ * _lm_var1 - buffer size (size > 0)
  */
 spi_swap:
   spi_slave_on
 
 spi_swap_slave_on:
   BANKSEL(SSP1BUF)
-  MOVWF  _leaf_method_var1
-  
   
 spi_swap_LOOP:
   MOVIW  0[FSR1]
@@ -179,15 +201,18 @@ spi_swap_LOOP:
   MOVF   BANKMASK(SSP1BUF), W
   MOVWI  FSR1++
   
-  DECFSZ _leaf_method_var1
+  DECFSZ _lm_var1
   GOTO spi_swap_LOOP
   
   spi_slave_off
   RETURN
 
 
+
 /**
  * Power off/rx/tx mode of the radio.
+ *
+ * Affected: _lm_var1, _lm_var2, BANK
  */
 power_off:
   MOVLW  CONFIG_OFF
@@ -198,11 +223,13 @@ power_rx:
 power_tx:
   MOVLW  CONFIG_TX
 power_set:
-  MOVWF  _leaf_method_var2
+  MOVWF  _lm_var2
   MOVLW  CONFIG_OFF
-  MOVWF  _leaf_method_var1
-  MOVF   _leaf_method_var2, W
+  MOVWF  _lm_var1
+  MOVF   _lm_var2, W
   GOTO   wreg8
+
+
 
 /**
  * Global nRF24 com protocol
@@ -261,6 +288,7 @@ init_sequence_start:
   DB 0
 
 
+
 /**
  * Configure for start com
  */
@@ -280,16 +308,24 @@ _nrf24_com_init_quick:
   wreg8_goto(SETUP_RETR, SETUP_RETR_ARC_15 | SETUP_RETR_ARD_1500)
 
 
+
 /**
  * Send message with enabled device.
+ * Preserve FSR1.
  *
- * FSR1   - 32 byte buffer to send
- * W      - size of the buffer
+ * Affected: _lm_var1, _lm_var2, BANK
+ *
+ * FSR1     - 32 byte buffer to send
+ * _lm_var1 - size of the buffer
  * Out: W - 0 : ok
  *          1 : error
  */
 msg_send:
   spi_slave_on
+  
+  ; Save buffer size
+  MOVF   _lm_var1, W
+  MOVWF  _lm_var2
 
   MOVLW  CMD_W_TX_PAYLOAD
   BANKSEL(SSP1BUF)
@@ -299,6 +335,12 @@ msg_send:
 
   ; Swap buffer and turn slave off
   CALL   spi_swap_slave_on
+
+  ; Restore FSR1
+  MOVF   _lm_var2, W
+  SUBWF  FSR1L
+  CLRW
+  SUBWFB FSR1H
 
 msg_send_LOOP:
   MOVLW  STATUS
@@ -314,15 +356,43 @@ msg_send_LOOP:
 
 
 
+/**
+ * Receive packet.
+ *
+ * Affected: _lm_var1
+ *
+ * FSR1   - 32 byte long buffer
+ * Out: _lm_var1 - 0 : error
+ *               > 0 : buffer length
+ */
+msg_receive:
+  CALL   power_rx
+  ce_on
+
+  CLRW
+  MOVWF  _lm_var1
+
+msg_recieve_LOOP:
+  MOVLW  STATUS
+  CALL   rreg8
+  
+  BTFSS  BANKMASK(SSP1BUF), STATUS_RX_DR_POSN
+  GOTO   msg_recieve_READ_PACKET
+
+  GOTO   msg_recieve_LOOP
+msg_recieve_READ_PACKET:
 
 
+msg_recieve_FINALLY:
+  ce_off
 
-
+  RETURN
 
 
 
 /**
  * Send start com msg.
+ * Preserve FSR1.
  *
  * FSR1   - 32 byte buffer to use
  * Out: W - 0 : ok
@@ -330,6 +400,8 @@ msg_send_LOOP:
  */
 global _nrf24_com_tx_start
 _nrf24_com_tx_start:
+  CALL   power_tx
+
   MOVLW  MSG_TYPE_START_COM
   MOVWI  0[FSR1]
 
@@ -347,23 +419,41 @@ _nrf24_com_tx_start:
   MOVLW  DEVICE_ID >> 24
   MOVWI  6[FSR1]
 
-  MOVLW  7
   ce_on
+
+  MOVLW  7
   CALL   send_msg
+  MOVWI  0[FSR1]  ; Save return value
+
   ce_off
+  CALL   power_off
 
+  MOVIW   0[FSR1] ; Restore return value
   RETURN
 
 
 
-
-
+/**
+ * Init com protokoll and get ready
+ * to send data messages.
+ * Moves FSR1 forward.
+ *
+ * FSR1   - 32 byte buffer to use
+ * Out: W - 0 : ok
+ *          1 : error
+ */
+global _nrf25_com_start
+_nrf25_com_start:
+  CALL   _nrf24_com_tx_start
   XORLW  0
-  BTFSS  STATUS, STATUS_Z_POSITION
-  RETURN
+  BTFSC  STATUS, STATUS_Z_POSITION
+  RETURN ; Error, cant send msgs
 
+  ; Wait for reply
+  CALL   _nrf24_com_init_quick
+  CALL   _nrf24_com_rx_start_resp
 
-
+  ce_off
 
 
 
