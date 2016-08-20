@@ -20,6 +20,12 @@ extern "C" {
 #define CE_TRIS TRISC
 #define CE_PIN  5
 
+// Set maximum amount of nRF24 status
+// register reads after which
+// the message receive method will
+// return an error.
+// 0 - 0xFFFF
+#define MAX_READ_TRYS 1000
     
     
 #define HA_SUBNET 0x2fd0b000

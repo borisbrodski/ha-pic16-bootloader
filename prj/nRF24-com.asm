@@ -1,5 +1,12 @@
 OPT EXPAND
 
+; Using variables:
+; * uint8 _lm_var1-2
+;   leaf method variables. Define in
+;   global BANK
+; * uint8 _result
+;   return value of methods. Define in
+;   global BANK
 
 #include <xc.inc>
 #include "nRF24L01.h"
@@ -154,7 +161,7 @@ ENDM
 /**
  * Read 1 byte register.
  *
- * Affected: BANK
+ * Affected: BANK=SSP1*
  *
  * W            - RF24 register
  * Out: SSP1BUF - Value
@@ -181,17 +188,21 @@ rreg8:
  * spi_swap:         spi-on/swap/spi-off
  * spi_swap_slave_on:swap/spi-off
  *
- * Affected: _lm_var1, FSR1, BANK
+ * Affected: _lm_var1-2, FSR1, BANK
  *
  * FSR1     - buffer to send
  * _lm_var1 - buffer size (size > 0)
+ * Out: _lm_var1 = 0
+ *      _lm_var2 - buffer size
  */
 spi_swap:
   spi_slave_on
 
 spi_swap_slave_on:
+  MOVF   _lm_var1, W
+  MOVWF  _lm_var2
+
   BANKSEL(SSP1BUF)
-  
 spi_swap_LOOP:
   MOVIW  0[FSR1]
   MOVWF  BANKMASK(SSP1BUF)
@@ -203,6 +214,12 @@ spi_swap_LOOP:
   
   DECFSZ _lm_var1
   GOTO spi_swap_LOOP
+
+  ; Restore FSR1
+  MOVF   _lm_var2, W
+  SUBWF  FSR1L, F
+  CLRW
+  SUBWFB FSR1H, F
   
   spi_slave_off
   RETURN
@@ -234,6 +251,7 @@ power_set:
 /**
  * Global nRF24 com protocol
  * initialization.
+ * Affected: FSR1, _lm_var1-2
  */
 global _nrf24_com_init
 _nrf24_com_init:
@@ -251,7 +269,13 @@ nrf24_com_init_LOOP:
   MOVIW    FSR1++
   BTFSC    STATUS, STATUS_Z_POSITION
   RETURN
+  MOVWF    _lm_var1
   CALL     spi_swap
+
+  MOVF     _lm_var2, W
+  ADDWF    FSR1L, F
+  CLRW
+  ADDWFC   FSR1H, F
 
   GOTO     nrf24_com_init_LOOP
 
@@ -313,19 +337,15 @@ _nrf24_com_init_quick:
  * Send message with enabled device.
  * Preserve FSR1.
  *
- * Affected: _lm_var1, _lm_var2, BANK
+ * Affected: _lm_var1-2
  *
  * FSR1     - 32 byte buffer to send
  * _lm_var1 - size of the buffer
- * Out: W - 0 : ok
- *          1 : error
+ * Out: W   - 0 : ok
+ *            1 : error
  */
-msg_send:
+msg_send:  
   spi_slave_on
-  
-  ; Save buffer size
-  MOVF   _lm_var1, W
-  MOVWF  _lm_var2
 
   MOVLW  CMD_W_TX_PAYLOAD
   BANKSEL(SSP1BUF)
@@ -336,16 +356,11 @@ msg_send:
   ; Swap buffer and turn slave off
   CALL   spi_swap_slave_on
 
-  ; Restore FSR1
-  MOVF   _lm_var2, W
-  SUBWF  FSR1L
-  CLRW
-  SUBWFB FSR1H
-
 msg_send_LOOP:
   MOVLW  STATUS
   CALL   rreg8
-  
+
+  BANKSEL(SSP1BUF)
   BTFSS  BANKMASK(SSP1BUF), STATUS_MAX_RT_POSN
   RETLW  1 ; Error
 
@@ -357,32 +372,67 @@ msg_send_LOOP:
 
 
 /**
- * Receive packet.
+ * Receive packet. Leave device
+ * in TX mode. Preserve FSR1.
  *
- * Affected: _lm_var1
+ * Affected: _lm_var1-2
  *
  * FSR1   - 32 byte long buffer
- * Out: _lm_var1 - 0 : error
- *               > 0 : buffer length
+ * Out: result - 0 : error
+ *             > 0 : buffer length
  */
 msg_receive:
   CALL   power_rx
   ce_on
 
-  CLRW
+  MOVLW  (MAX_READ_TRYS >> 8)
   MOVWF  _lm_var1
+  MOVLW  (MAX_READ_TRYS & 0xFF)
+  MOVWF  _lm_var2
 
 msg_recieve_LOOP:
   MOVLW  STATUS
   CALL   rreg8
   
-  BTFSS  BANKMASK(SSP1BUF), STATUS_RX_DR_POSN
-  GOTO   msg_recieve_READ_PACKET
+  BANKSEL(SSP1BUF)
+  BTFSC  BANKMASK(SSP1BUF), STATUS_RX_DR_POSN
+  GOTO   msg_recieve_OK
 
+  DECFSZ _lm_var1
   GOTO   msg_recieve_LOOP
-msg_recieve_READ_PACKET:
+  DECFSZ _lm_var2
+  GOTO   msg_recieve_LOOP
 
+  ; ERROR
+  ; Timeout, report error: _result=0
+  CLRW
+  MOVWF  _result
+  GOTO   msg_recieve_FINALLY
 
+msg_recieve_OK:
+  ; Read packet size in pipe 0
+  MOVLW  RX_PW_P0
+  CALL   rreg8
+
+  ; Set buf-size for spi_swap_slave_on
+  BANKSEL(SSP1BUF)
+  MOVF   SSP1BUF, W
+  MOVWF  _lm_var1
+
+  ; Set buf-size for return value
+  MOVWF  _result
+
+  spi_slave_on
+
+  MOVLW  CMD_R_RX_PAYLOAD
+  BANKSEL(SSP1BUF)
+  MOVWF  BANKMASK(SSP1BUF)
+
+  spi_wait
+
+  ; Swap buffer and turn slave off
+  CALL   spi_swap_slave_on
+  
 msg_recieve_FINALLY:
   ce_off
 
@@ -395,8 +445,8 @@ msg_recieve_FINALLY:
  * Preserve FSR1.
  *
  * FSR1   - 32 byte buffer to use
- * Out: W - 0 : ok
- *          1 : error
+ * Out: _result - 0 : ok
+ *                1 : error
  */
 global _nrf24_com_tx_start
 _nrf24_com_tx_start:
@@ -423,12 +473,10 @@ _nrf24_com_tx_start:
 
   MOVLW  7
   CALL   send_msg
-  MOVWI  0[FSR1]  ; Save return value
+  MOVWF  _result  ; Save return value
 
   ce_off
-  CALL   power_off
 
-  MOVIW   0[FSR1] ; Restore return value
   RETURN
 
 
@@ -439,21 +487,24 @@ _nrf24_com_tx_start:
  * Moves FSR1 forward.
  *
  * FSR1   - 32 byte buffer to use
- * Out: W - 0 : ok
- *          1 : error
+ * Out: _result - 0 : ok
+ *                1 : error
  */
 global _nrf25_com_start
 _nrf25_com_start:
   CALL   _nrf24_com_tx_start
-  XORLW  0
+  MOVF   _result, F
   BTFSC  STATUS, STATUS_Z_POSITION
   RETURN ; Error, cant send msgs
 
   ; Wait for reply
   CALL   _nrf24_com_init_quick
-  CALL   _nrf24_com_rx_start_resp
 
-  ce_off
+
+  ; CALL   _nrf24_com_rx_start_resp
+  
+
+
 
 
 
